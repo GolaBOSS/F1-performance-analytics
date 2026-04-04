@@ -1,0 +1,199 @@
+---
+title: "F1 SQL analysis in R Studio"
+author: "Maciej G"
+output: html_document
+---
+
+The analysis is based on the Formula 1 World Championship (1950-2023) dataset, sourced from Kaggle. This relational dataset contains comprehensive records of races, drivers, constructors, qualifying results, and lap times, providing a rich foundation for complex SQL querying and performance analytics.
+
+```{r}
+library(DBI)
+library(RSQLite)
+library(readr)
+```
+
+I established a local ETL (Extract, Transform, Load) pipeline by importing multiple CSV datasets (drivers, results, races, etc.) into a temporary SQLite database in RAM. To ensure data integrity, I performed data type conversions, specifically formatting date and time strings to standard formats for accurate querying.
+
+```{r}
+con <- dbConnect(RSQLite::SQLite(), ":memory:")
+
+drivers <- read_csv("Datasets/drivers.csv")
+races <- read_csv("Datasets/races.csv")
+results <- read_csv("Datasets/results.csv")
+lap_times <- read_csv("Datasets/lap_times.csv")
+circuits <- read_csv("Datasets/circuits.csv")
+constructors <- read_csv("Datasets/constructors.csv")
+constructor_results <- read_csv("Datasets/constructor_results.csv")
+
+# Changing data types
+drivers$dob <- as.character(drivers$dob)
+lap_times$time <- as.character(lap_times$time)
+races$date <- as.character(races$date)
+
+# Coping data frames
+dbWriteTable(con, "drivers", drivers, overwrite = TRUE)
+dbWriteTable(con, "races", races, overwrite = TRUE)
+dbWriteTable(con, "results", results)
+dbWriteTable(con, "lap_times", lap_times, overwrite = TRUE)
+dbWriteTable(con, "circuits", circuits)
+dbWriteTable(con, "constructors", constructors)
+dbWriteTable(con, "constructor_results", constructor_results)
+```
+**F1 dataset analysis**
+
+Polish drivers sql to r table
+```{sql, connection=con, output.var = "polish_drivers"}
+SELECT 
+    driverRef, 
+    nationality 
+FROM drivers 
+WHERE nationality = 'Polish'
+LIMIT 5
+```
+
+Polish F1 drivers
+```{r}
+print(polish_drivers)
+```
+
+TOP 5 drivers with most wins in MONACO GP
+```{sql, connection=con}
+SELECT d.forename, d.surname, COUNT(*) AS total_wins
+FROM drivers d JOIN results res ON d.driverId = res.driverId
+JOIN races r ON res.raceId = r.raceId
+WHERE res.position = '1' 
+  AND r.name = 'Monaco Grand Prix'
+GROUP BY d.forename, d.surname
+ORDER BY total_wins DESC
+LIMIT 5
+```
+
+Fastest lap in F1 history
+```{sql, connection = con}
+SELECT d.forename, d. surname, l.time, l.milliseconds, r.name, c.name, r.year
+FROM lap_times l 
+  JOIN drivers d ON l.driverId = d.driverId
+  JOIN races r ON l.raceId = r.raceId
+  JOIN circuits c ON r.circuitId = c.circuitId 
+ORDER BY l.time, l.milliseconds
+LIMIT 1
+```
+Winners from grid position >15
+```{sql, connection = con}
+SELECT d.forename, d.surname, r.grid AS starting_position, rec.name AS GP_name, rec.year
+FROM drivers d
+  JOIN results r ON d.driverId = r.driverId
+  JOIN races rec ON r.raceId = rec.raceId
+WHERE r.positionOrder = 1 AND grid > 15
+ORDER BY starting_position DESC
+```
+Which era driver raced in?
+```{sql, connection = con}
+SELECT forename, surname, dob,
+  CASE
+    WHEN dob < '1950-01-01' THEN 'Pioneer'
+    WHEN dob BETWEEN '1950-01-01' AND '1980-01-01' THEN 'Classic'
+    ELSE 'Modern'
+  END AS Era
+FROM drivers
+ORDER BY dob DESC
+LIMIT 5
+```
+Number of drivers form each era
+```{sql, connection = con}
+SELECT
+  CASE
+    WHEN dob < '1950-01-01' THEN 'Pioneer'
+    WHEN dob BETWEEN '1950-01-01' AND '1980-01-01' THEN 'Classic'
+    ELSE 'Modern'
+  END AS era, 
+COUNT(*) AS total
+FROM drivers
+GROUP BY era
+ORDER BY total DESC
+```
+Number of drivers from different countries (>50)
+```{sql, connection = con}
+SELECT nationality, COUNT (*) AS total
+FROM drivers
+GROUP BY nationality
+HAVING total > 50
+ORDER BY total DESC
+```
+Points by team after 2010, only 1000+
+```{sql, connection = con}
+SELECT c.name, SUM(cr.points) AS total_points
+FROM constructors c 
+  JOIN constructor_results cr ON c.constructorId = cr.constructorId
+  JOIN races r ON cr.raceId = r.raceId
+WHERE r.year > 2010
+GROUP BY c.name
+HAVING SUM(cr.points) > 1000
+ORDER BY 2 DESC
+```
+CTE, Window Functions
+
+Each GP winner in year 2023
+```{sql, connection = con}
+WITH position_table AS (
+  SELECT d.surname, r.name, res.points, r.year,
+    RANK() OVER (PARTITION BY r.raceId ORDER BY res.points DESC) as position
+  FROM results res
+  JOIN drivers d ON res.driverId = d.driverId
+  JOIN races r ON res.raceId = r.raceId
+)
+SELECT surname AS driver, name AS gp_name, points, year, position
+FROM position_table 
+WHERE position = 1 AND year = 2023
+```
+Verstappen 2023 GP points + difference to previous one
+```{sql, connection = con}
+WITH ver_points_2023 AS (
+  SELECT 
+    r.name, 
+    r.date,
+    res.points as current_points,
+    LAG(res.points) OVER (ORDER BY r.date) as previous_points
+  FROM results res
+  JOIN drivers d ON res.driverId = d.driverId
+  JOIN races r ON res.raceId = r.raceId
+  WHERE d.surname = 'Verstappen' AND r.year = 2023
+  ORDER BY r.date
+)
+SELECT *, (current_points - previous_points) AS points_diff
+FROM ver_points_2023
+```
+H2H Ferrari drivers, position in 2023 GPs
+```{sql, connection = con}
+SELECT 
+  r.name AS GrandPrix,
+  d1.surname AS Driver_A,
+  r1.positionOrder AS Pos_A,
+  d2.surname AS Driver_B,
+  r2.positionOrder AS Pos_B,
+  (r2.positionOrder - r1.positionOrder) AS position_gap
+FROM results r1
+JOIN results r2 ON r1.raceId = r2.raceId AND r1.constructorId = r2.constructorId
+JOIN drivers d1 ON r1.driverId = d1.driverId
+JOIN drivers d2 ON r2.driverId = d2.driverId
+JOIN races r ON r1.raceId = r.raceId
+WHERE r1.constructorId = 6
+  AND r.year = 2023
+  AND d1.surname > d2.surname
+```
+Number of wins by driver nationality
+```{sql, connection = con}
+SELECT d.nationality, COUNT(CASE WHEN r.position = 1 THEN 1 END) AS wins
+FROM drivers d 
+  LEFT JOIN results r ON d.driverId = r.driverId
+GROUP BY nationality
+ORDER BY 2 DESC
+```
+
+```{r}
+dbDisconnect(con)
+```
+
+
+
+
