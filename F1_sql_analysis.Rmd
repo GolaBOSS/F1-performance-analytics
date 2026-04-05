@@ -1,12 +1,12 @@
 ---
 title: "F1 SQL analysis in R Studio"
 author: "Maciej G"
-output: html_document
+output: pdf_document
 ---
 
 The analysis is based on the Formula 1 World Championship (1950-2023) dataset, sourced from Kaggle. This relational dataset contains comprehensive records of races, drivers, constructors, qualifying results, and lap times, providing a rich foundation for complex SQL querying and performance analytics.
 
-```{r}
+```{r, results='hide', warning=FALSE}
 library(DBI)
 library(RSQLite)
 library(readr)
@@ -14,7 +14,7 @@ library(readr)
 
 I established a local ETL (Extract, Transform, Load) pipeline by importing multiple CSV datasets (drivers, results, races, etc.) into a temporary SQLite database in RAM. To ensure data integrity, I performed data type conversions, specifically formatting date and time strings to standard formats for accurate querying.
 
-```{r}
+```{r, results='hide', warning=FALSE, message=FALSE}
 con <- dbConnect(RSQLite::SQLite(), ":memory:")
 
 drivers <- read_csv("Datasets/drivers.csv")
@@ -24,6 +24,13 @@ lap_times <- read_csv("Datasets/lap_times.csv")
 circuits <- read_csv("Datasets/circuits.csv")
 constructors <- read_csv("Datasets/constructors.csv")
 constructor_results <- read_csv("Datasets/constructor_results.csv")
+constructor_standings <- read_csv("Datasets/constructor_standings.csv")
+driver_standings <- read_csv("Datasets/driver_standings.csv")
+pit_stops <- read_csv("Datasets/pit_stops.csv")
+qualifying <- read_csv("Datasets/qualifying.csv")
+seasons <- read_csv("Datasets/seasons.csv")
+sprint_results <- read_csv("Datasets/sprint_results.csv")
+ststus <- read_csv("Datasets/status.csv")
 
 # Changing data types
 drivers$dob <- as.character(drivers$dob)
@@ -38,6 +45,13 @@ dbWriteTable(con, "lap_times", lap_times, overwrite = TRUE)
 dbWriteTable(con, "circuits", circuits)
 dbWriteTable(con, "constructors", constructors)
 dbWriteTable(con, "constructor_results", constructor_results)
+dbWriteTable(con, "constructor_standings", constructor_standings)
+dbWriteTable(con, "driver_standings", driver_standings)
+dbWriteTable(con, "pit_stops", pit_stops)
+dbWriteTable(con, "qualifying", qualifying)
+dbWriteTable(con, "seasons", seasons)
+dbWriteTable(con, "sprint_results", sprint_results)
+dbWriteTable(con, "ststus", ststus)
 ```
 **F1 dataset analysis**
 
@@ -167,10 +181,8 @@ H2H Ferrari drivers, position in 2023 GPs
 ```{sql, connection = con}
 SELECT 
   r.name AS GrandPrix,
-  d1.surname AS Driver_A,
-  r1.positionOrder AS Pos_A,
-  d2.surname AS Driver_B,
-  r2.positionOrder AS Pos_B,
+  d1.surname AS Driver_A, r1.positionOrder AS Pos_A,
+  d2.surname AS Driver_B, r2.positionOrder AS Pos_B,
   (r2.positionOrder - r1.positionOrder) AS position_gap
 FROM results r1
 JOIN results r2 ON r1.raceId = r2.raceId AND r1.constructorId = r2.constructorId
